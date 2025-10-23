@@ -3,6 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "anthropic",
+#     "google-generativeai",
 #     "python-dotenv",
 # ]
 # ///
@@ -40,45 +41,60 @@ def get_tts_script_path():
 
 
 def generate_fallback_update(recent_tools):
-    """Generate a simple fallback update without API."""
+    """Generate a simple fallback update without API, trying to infer the goal."""
     import random
 
     engineer_name = os.getenv("ENGINEER_NAME", "").strip()
 
-    # Get the most recent meaningful tool
-    for tool in reversed(recent_tools):
-        tool_name = tool.get('tool_name', '')
-        tool_input = tool.get('tool_input', {})
-        description = tool.get('description', '')
+    # Try to infer goal from patterns of actions
+    tool_names = [t.get('tool_name', '') for t in recent_tools[-5:]]
 
-        if tool_name == 'Bash':
-            command = tool_input.get('command', '')
-            if 'install' in command.lower() or 'npm' in command.lower():
-                action = "Just installed some packages"
-            elif 'build' in command.lower():
-                action = "Building the project"
-            elif 'test' in command.lower():
-                action = "Running tests"
-            else:
-                action = "Executed a command"
-        elif tool_name == 'Write':
-            action = "Created a new file"
-        elif tool_name == 'Edit':
-            action = "Updated some code"
-        elif tool_name == 'Read':
-            action = "Reviewing the code"
-        elif tool_name == 'Grep':
-            action = "Searching through the codebase"
-        else:
-            continue
+    # Pattern: Multiple Reads/Greps = investigating/researching
+    if tool_names.count('Read') + tool_names.count('Grep') >= 3:
+        goals = [
+            "Investigating the codebase",
+            "Researching the implementation",
+            "Understanding how this works",
+            "Reviewing the code structure"
+        ]
+        goal = random.choice(goals)
+    # Pattern: Edit + Bash = fixing/testing something
+    elif 'Edit' in tool_names and 'Bash' in tool_names:
+        goals = [
+            "Making some fixes and testing",
+            "Updating code and running checks",
+            "Tweaking the implementation"
+        ]
+        goal = random.choice(goals)
+    # Pattern: Write + Edit = building/creating
+    elif 'Write' in tool_names or tool_names.count('Edit') >= 2:
+        goals = [
+            "Building out the feature",
+            "Setting things up",
+            "Adding new functionality"
+        ]
+        goal = random.choice(goals)
+    # Pattern: Bash commands = running operations
+    elif 'Bash' in tool_names:
+        for tool in reversed(recent_tools):
+            if tool.get('tool_name') == 'Bash':
+                command = tool.get('tool_input', {}).get('command', '')
+                if 'install' in command.lower():
+                    goal = "Installing dependencies"
+                elif 'build' in command.lower():
+                    goal = "Building the project"
+                elif 'test' in command.lower():
+                    goal = "Running tests"
+                else:
+                    goal = "Running some commands"
+                break
+    else:
+        goal = "Working through the task"
 
-        next_actions = ["moving on to the next step", "checking the results", "continuing with the work", "reviewing what's next"]
-        next_action = random.choice(next_actions)
-
-        if engineer_name:
-            return f"{action}, {engineer_name}. Now {next_action}"
-        else:
-            return f"{action}. Now {next_action}"
+    if engineer_name:
+        return f"{engineer_name}, {goal.lower()}"
+    else:
+        return goal
 
     return None
 
@@ -93,87 +109,147 @@ def generate_contextual_update(recent_tools):
     Returns:
         str: Natural language update, or None if error
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return generate_fallback_update(recent_tools)
+    # Build context from recent tools (shared logic)
+    context = []
+    for tool in recent_tools:
+        tool_name = tool.get('tool_name', 'unknown')
+        tool_input = tool.get('tool_input', {})
+        description = tool_input.get('description', '')
 
-    try:
-        import anthropic
-
-        # Build context from recent tools
-        context = []
-        for tool in recent_tools:
-            tool_name = tool.get('tool_name', 'unknown')
-            description = tool.get('description', '')
-            tool_input = tool.get('tool_input', {})
-
-            # Extract meaningful context
+        # Extract meaningful context - use description as primary, with details as secondary
+        if description:
+            # Prefer human-written descriptions as they're more meaningful
+            context.append(description)
+        else:
+            # Fallback to auto-generated context if no description
             if tool_name == 'Bash':
-                command = tool_input.get('command', '')[:100]  # Truncate long commands
-                context.append(f"Ran command: {command}")
+                command = tool_input.get('command', '')[:80]
+                context.append(f"Running: {command}")
             elif tool_name == 'Write':
                 file_path = tool_input.get('file_path', '')
-                context.append(f"Created file: {Path(file_path).name if file_path else 'new file'}")
+                context.append(f"Creating {Path(file_path).name if file_path else 'new file'}")
             elif tool_name == 'Edit':
                 file_path = tool_input.get('file_path', '')
-                context.append(f"Edited file: {Path(file_path).name if file_path else 'file'}")
+                context.append(f"Editing {Path(file_path).name if file_path else 'a file'}")
             elif tool_name == 'Read':
                 file_path = tool_input.get('file_path', '')
-                context.append(f"Read file: {Path(file_path).name if file_path else 'file'}")
+                context.append(f"Reading {Path(file_path).name if file_path else 'a file'}")
             elif tool_name == 'Grep':
                 pattern = tool_input.get('pattern', '')
-                context.append(f"Searched for: {pattern}")
+                context.append(f"Searching codebase for '{pattern}'")
             elif tool_name == 'Glob':
                 pattern = tool_input.get('pattern', '')
-                context.append(f"Found files matching: {pattern}")
+                context.append(f"Finding files: {pattern}")
 
-            if description:
-                context.append(f"  ({description})")
+    context_text = "\n".join(context)
+    engineer_name = os.getenv("ENGINEER_NAME", "").strip()
+    name_instruction = f"Start with the engineer's name '{engineer_name},' at the beginning" if engineer_name else "Do not include any name"
 
-        context_text = "\n".join(context)
+    # Try Gemini first (cheapest and fastest)
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if gemini_api_key:
+        try:
+            import google.generativeai as genai
 
-        engineer_name = os.getenv("ENGINEER_NAME", "").strip()
-        name_instruction = f"Include the engineer's name '{engineer_name}' naturally in the update." if engineer_name else ""
+            genai.configure(api_key=gemini_api_key)
+            model = genai.GenerativeModel('gemini-2.0-flash-lite-latest')
 
-        client = anthropic.Anthropic(api_key=api_key)
-
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=60,
-            temperature=0.7,
-            messages=[{
-                "role": "user",
-                "content": f"""You are a friendly AI coding assistant providing quick progress updates.
+            prompt = f"""You are providing factual work status updates.
 
 Recent actions:
 {context_text}
 
-Generate a brief, natural progress update (under 15 words) about what you just did and what you're doing next.
+Based ONLY on these actions, state what task is being worked on. Use 8-12 words maximum.
 
-Requirements:
-- Be casual and conversational
-- Mention specific files/actions when relevant
-- Sound like you're making progress
+STRICT RULES:
 - {name_instruction}
-- Do NOT include quotes or formatting
-- Return ONLY the update message
+- Be LITERAL and SPECIFIC - mention actual files/topics from the actions
+- Use present continuous tense ("-ing" verbs)
+- NO praise, NO motivation, NO excitement, NO generic statements
+- If you can't infer a clear task, describe the most recent action
+- Return ONLY the statement, nothing else
 
-Examples:
-- "Just installed the three.js package, now reviewing the design"
-- "Created the API endpoint, moving on to tests"
-- "Dan, finished the database migration, checking the schema now"
+GOOD (specific, factual):
+- "Nick, checking temperature settings in announcement files"
+- "Reviewing session log directory structure"
+- "Searching for TTS model configuration"
 
-Your update:"""
-            }]
-        )
+BAD (generic, praise-y, vague):
+- "Your search was successful" ← TOO VAGUE
+- "Making great progress" ← TOO GENERIC
+- "Code is looking good" ← PRAISE (FORBIDDEN)
+- "Working on improvements" ← NOT SPECIFIC
 
-        response = message.content[0].text.strip()
-        # Clean up response
-        response = response.strip('"').strip("'").strip()
-        return response
+Statement:"""
 
-    except Exception as e:
-        return None
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    'temperature': 0.3,
+                    'max_output_tokens': 50,
+                }
+            )
+
+            text = response.text.strip()
+            text = text.strip('"').strip("'").strip()
+            return text
+
+        except Exception:
+            pass
+
+    # Fallback to Anthropic
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=anthropic_api_key)
+
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=50,
+                temperature=0.3,
+                messages=[{
+                    "role": "user",
+                    "content": f"""You are providing factual work status updates.
+
+Recent actions:
+{context_text}
+
+Based ONLY on these actions, state what task is being worked on. Use 8-12 words maximum.
+
+STRICT RULES:
+- {name_instruction}
+- Be LITERAL and SPECIFIC - mention actual files/topics from the actions
+- Use present continuous tense ("-ing" verbs)
+- NO praise, NO motivation, NO excitement, NO generic statements
+- If you can't infer a clear task, describe the most recent action
+- Return ONLY the statement, nothing else
+
+GOOD (specific, factual):
+- "Nick, checking temperature settings in announcement files"
+- "Reviewing session log directory structure"
+- "Searching for TTS model configuration"
+
+BAD (generic, praise-y, vague):
+- "Your search was successful" ← TOO VAGUE
+- "Making great progress" ← TOO GENERIC
+- "Code is looking good" ← PRAISE (FORBIDDEN)
+- "Working on improvements" ← NOT SPECIFIC
+
+Statement:"""
+                }]
+            )
+
+            response = message.content[0].text.strip()
+            response = response.strip('"').strip("'").strip()
+            return response
+
+        except Exception:
+            pass
+
+    # Final fallback to simple update
+    return generate_fallback_update(recent_tools)
 
 
 def announce_progress(message):
