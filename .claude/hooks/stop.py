@@ -9,7 +9,6 @@
 import argparse
 import json
 import sys
-import subprocess
 from pathlib import Path
 from utils.constants import ensure_session_log_dir
 
@@ -20,84 +19,6 @@ try:
 except ImportError:
     pass  # dotenv is optional
 
-
-
-
-def announce_if_work_done(session_id):
-    """
-    Announce progress ONLY if actual work was done this turn.
-    Uses the same factual progress announcer as post_tool_use hook.
-
-    Args:
-        session_id: The session ID
-    """
-    try:
-        log_dir = ensure_session_log_dir(session_id)
-        post_tool_log = log_dir / "post_tool_use.json"
-        stop_state_path = log_dir / "stop_state.json"
-
-        # Read current tool count
-        if not post_tool_log.exists():
-            return  # No tools used, nothing to announce
-
-        with open(post_tool_log, 'r') as f:
-            tool_data = json.load(f)
-
-        current_tool_count = len(tool_data)
-
-        # Read last tool count from previous stop
-        last_tool_count = 0
-        if stop_state_path.exists():
-            with open(stop_state_path, 'r') as f:
-                try:
-                    state = json.load(f)
-                    last_tool_count = state.get('tool_count', 0)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
-        # Save current count for next time
-        with open(stop_state_path, 'w') as f:
-            json.dump({'tool_count': current_tool_count}, f)
-
-        # If no new tools used this turn, SILENT
-        if current_tool_count <= last_tool_count:
-            return
-
-        # Get recent tools for context
-        recent_tools = tool_data[-5:] if len(tool_data) >= 5 else tool_data
-
-        # Extract context in same format as progress_announcer expects
-        context = []
-        for tool_event in recent_tools:
-            tool_name = tool_event.get('tool_name', '')
-            tool_input = tool_event.get('tool_input', {})
-            description = tool_input.get('description', '')
-
-            context.append({
-                'tool_name': tool_name,
-                'description': description,
-                'tool_input': tool_input
-            })
-
-        # Call progress announcer with same factual approach
-        script_dir = Path(__file__).parent
-        announcer_script = script_dir / "utils" / "progress_announcer.py"
-
-        if not announcer_script.exists():
-            return
-
-        tools_json = json.dumps(context)
-        subprocess.run(
-            ["uv", "run", str(announcer_script)],
-            input=tools_json,
-            capture_output=True,
-            text=True,
-            timeout=15
-        )
-
-    except Exception:
-        # Fail silently
-        pass
 
 
 def main():
@@ -160,8 +81,8 @@ def main():
                 except Exception:
                     pass  # Fail silently
 
-        # Announce ONLY if actual work was done this turn
-        announce_if_work_done(session_id)
+        # TTS announcements handled by post_tool_use hook
+        # No announcement needed here to avoid duplicates
 
         sys.exit(0)
 
