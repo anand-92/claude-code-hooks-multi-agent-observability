@@ -3,6 +3,8 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "python-dotenv",
+#     "anthropic",
+#     "openai",
 # ]
 # ///
 
@@ -85,14 +87,198 @@ def get_tts_script_path():
     return None
 
 
-def get_llm_completion_message():
+def get_recent_tool_context(session_id):
+    """
+    Read recent tool usage from session logs to provide context.
+
+    Args:
+        session_id: The session ID
+
+    Returns:
+        list: Recent tool usage data (last 5 tools), or empty list if unavailable
+    """
+    try:
+        log_dir = ensure_session_log_dir(session_id)
+        post_tool_log = log_dir / "post_tool_use.json"
+
+        if not post_tool_log.exists():
+            return []
+
+        with open(post_tool_log, 'r') as f:
+            tool_data = json.load(f)
+
+        # Get last 5 tool uses
+        recent_tools = tool_data[-5:] if len(tool_data) >= 5 else tool_data
+
+        # Extract relevant context
+        context = []
+        for tool_event in recent_tools:
+            tool_name = tool_event.get('tool_name', '')
+            tool_input = tool_event.get('tool_input', {})
+            description = tool_input.get('description', '')
+
+            context.append({
+                'tool_name': tool_name,
+                'description': description,
+                'tool_input': tool_input
+            })
+
+        return context
+    except Exception:
+        return []
+
+
+def generate_contextual_completion_message(context):
+    """
+    Generate a contextual completion message using LLM based on what was actually done.
+
+    Args:
+        context: List of recent tool usage
+
+    Returns:
+        str: Generated completion message or None if failed
+    """
+    if not context:
+        return None
+
+    # Try Anthropic first
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if api_key:
+        try:
+            import anthropic
+
+            # Build context summary
+            actions = []
+            for tool in context:
+                tool_name = tool.get('tool_name', '')
+                description = tool.get('description', '')
+                tool_input = tool.get('tool_input', {})
+
+                if tool_name == 'Bash':
+                    command = tool_input.get('command', '')[:100]
+                    actions.append(f"Ran: {command}")
+                elif tool_name == 'Write':
+                    file_path = tool_input.get('file_path', '')
+                    actions.append(f"Created: {Path(file_path).name if file_path else 'file'}")
+                elif tool_name == 'Edit':
+                    file_path = tool_input.get('file_path', '')
+                    actions.append(f"Edited: {Path(file_path).name if file_path else 'file'}")
+                elif tool_name == 'Read':
+                    file_path = tool_input.get('file_path', '')
+                    actions.append(f"Read: {Path(file_path).name if file_path else 'file'}")
+                elif tool_name == 'Grep' or tool_name == 'Glob':
+                    pattern = tool_input.get('pattern', '')
+                    actions.append(f"Searched: {pattern}")
+                elif tool_name == 'Task':
+                    prompt = tool_input.get('prompt', '')[:50]
+                    actions.append(f"Delegated task: {prompt}")
+
+                if description:
+                    actions.append(f"  ({description})")
+
+            context_text = "\n".join(actions)
+
+            engineer_name = os.getenv("ENGINEER_NAME", "").strip()
+            name_instruction = f"ALWAYS include the engineer's name '{engineer_name}' naturally." if engineer_name else ""
+
+            client = anthropic.Anthropic(api_key=api_key)
+
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=50,
+                temperature=0.8,
+                messages=[{
+                    "role": "user",
+                    "content": f"""You are a friendly AI coding assistant. Generate a brief, creative completion message based on what you just accomplished.
+
+Recent actions:
+{context_text}
+
+Generate a short completion message (under 10 words) that:
+- References what you actually did
+- Is positive, energetic, and occasionally witty
+- Sounds natural and conversational
+- {name_instruction}
+- Do NOT include quotes or formatting
+- Return ONLY the message
+
+Examples:
+- "Database migrated successfully, Dan! Ready to roll!"
+- "Tests passing! Feeling good about this, Sarah!"
+- "API endpoints all hooked up, boss!"
+- "Refactored that code like a champ!"
+
+Your message:"""
+                }]
+            )
+
+            response = message.content[0].text.strip()
+            response = response.strip('"').strip("'").strip()
+            return response
+
+        except Exception:
+            pass
+
+    # Try OpenAI if Anthropic fails
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        try:
+            from openai import OpenAI
+
+            # Build context (same as above)
+            actions = []
+            for tool in context:
+                tool_name = tool.get('tool_name', '')
+                description = tool.get('description', '')
+                actions.append(f"{tool_name}: {description}" if description else tool_name)
+
+            context_text = ", ".join(actions[-3:])  # Last 3 actions
+
+            engineer_name = os.getenv("ENGINEER_NAME", "").strip()
+            name_instruction = f"Include '{engineer_name}' in the message." if engineer_name else ""
+
+            client = OpenAI(api_key=api_key)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=30,
+                temperature=0.8,
+                messages=[{
+                    "role": "user",
+                    "content": f"Generate a brief (under 10 words), energetic completion message about: {context_text}. {name_instruction} Be creative and positive. Return only the message, no quotes."
+                }]
+            )
+
+            message = response.choices[0].message.content.strip()
+            message = message.strip('"').strip("'").strip()
+            return message
+
+        except Exception:
+            pass
+
+    return None
+
+
+def get_llm_completion_message(session_id=None):
     """
     Generate completion message using available LLM services.
-    Priority order: OpenAI > Anthropic > fallback to random message
+    Priority order: Contextual (if session_id) > OpenAI > Anthropic > fallback to random message
+
+    Args:
+        session_id: Optional session ID to generate contextual messages
 
     Returns:
         str: Generated or fallback completion message
     """
+    # Try contextual message first if session_id is provided
+    if session_id:
+        context = get_recent_tool_context(session_id)
+        if context:
+            contextual_msg = generate_contextual_completion_message(context)
+            if contextual_msg:
+                return contextual_msg
+
+    # Fall back to generic LLM-generated messages
     # Get current script directory and construct utils/llm path
     script_dir = Path(__file__).parent
     llm_dir = script_dir / "utils" / "llm"
@@ -134,15 +320,19 @@ def get_llm_completion_message():
     return random.choice(messages)
 
 
-def announce_completion():
-    """Announce completion using the best available TTS service."""
+def announce_completion(session_id=None):
+    """Announce completion using the best available TTS service.
+
+    Args:
+        session_id: Optional session ID for contextual messages
+    """
     try:
         tts_script = get_tts_script_path()
         if not tts_script:
             return  # No TTS scripts available
 
-        # Get completion message (LLM-generated or fallback)
-        completion_message = get_llm_completion_message()
+        # Get completion message (contextual if session_id provided, or fallback)
+        completion_message = get_llm_completion_message(session_id)
 
         # Call the TTS script with the completion message
         subprocess.run(
@@ -219,8 +409,8 @@ def main():
                 except Exception:
                     pass  # Fail silently
 
-        # Announce completion via TTS
-        announce_completion()
+        # Announce completion via TTS with contextual message
+        announce_completion(session_id)
 
         sys.exit(0)
 
