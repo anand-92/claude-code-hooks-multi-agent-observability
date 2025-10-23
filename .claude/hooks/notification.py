@@ -57,15 +57,30 @@ def announce_notification():
         tts_script = get_tts_script_path()
         if not tts_script:
             return  # No TTS scripts available
-        
+
         # Get engineer name if available
         engineer_name = os.getenv('ENGINEER_NAME', '').strip()
-        
-        # Create notification message with 30% chance to include name
-        if engineer_name and random.random() < 0.3:
-            notification_message = f"{engineer_name}, your agent needs your input"
+
+        # Create varied notification messages
+        if engineer_name:
+            messages = [
+                f"{engineer_name}, your agent needs you",
+                f"{engineer_name}, time for your input",
+                f"Hey {engineer_name}, agent waiting",
+                f"{engineer_name}, your turn!",
+                f"Agent calling, {engineer_name}",
+                f"{engineer_name}, I need your wisdom",
+            ]
+            notification_message = random.choice(messages)
         else:
-            notification_message = "Your agent needs your input"
+            messages = [
+                "Your agent needs you",
+                "Time for your input",
+                "Agent waiting",
+                "Your turn!",
+                "Agent calling",
+            ]
+            notification_message = random.choice(messages)
         
         # Call the TTS script with the notification message
         subprocess.run([

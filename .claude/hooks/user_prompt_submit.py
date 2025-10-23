@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+import random
 from pathlib import Path
 from datetime import datetime
 
@@ -19,6 +20,19 @@ try:
     load_dotenv()
 except ImportError:
     pass  # dotenv is optional
+
+
+def generate_random_agent_name():
+    """Generate a random agent name without API calls."""
+    prefixes = [
+        "Code", "Byte", "Pixel", "Nexus", "Swift", "Cyber", "Data", "Logic",
+        "Quantum", "Neural", "Spark", "Vector", "Matrix", "Apex", "Prime"
+    ]
+    suffixes = [
+        "Bot", "Dev", "Pro", "AI", "Ninja", "Wizard", "Forge", "Mind",
+        "Core", "Lab", "Hub", "Sync", "Flow", "Wave", "Node"
+    ]
+    return random.choice(prefixes) + random.choice(suffixes)
 
 
 def log_user_prompt(session_id, input_data):
@@ -71,7 +85,9 @@ def manage_session_data(session_id, prompt, name_agent=False):
 
     # Generate agent name if requested and not already present
     if name_agent and "agent_name" not in session_data:
-        # Try Anthropic first (preferred)
+        agent_name = None
+
+        # Try Anthropic first (preferred, if API key is available)
         try:
             result = subprocess.run(
                 ["uv", "run", ".claude/hooks/utils/llm/anth.py", "--agent-name"],
@@ -81,30 +97,18 @@ def manage_session_data(session_id, prompt, name_agent=False):
             )
 
             if result.returncode == 0 and result.stdout.strip():
-                agent_name = result.stdout.strip()
+                candidate = result.stdout.strip()
                 # Validate the name
-                if len(agent_name.split()) == 1 and agent_name.isalnum():
-                    session_data["agent_name"] = agent_name
-                else:
-                    raise Exception("Invalid name from Anthropic")
+                if len(candidate.split()) == 1 and candidate.isalnum():
+                    agent_name = candidate
         except Exception:
-            # Fall back to Ollama if Anthropic fails
-            try:
-                result = subprocess.run(
-                    ["uv", "run", ".claude/hooks/utils/llm/ollama.py", "--agent-name"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,  # Shorter timeout for local Ollama
-                )
+            pass
 
-                if result.returncode == 0 and result.stdout.strip():
-                    agent_name = result.stdout.strip()
-                    # Check if it's a valid name (not an error message)
-                    if len(agent_name.split()) == 1 and agent_name.isalnum():
-                        session_data["agent_name"] = agent_name
-            except Exception:
-                # If both fail, don't block the prompt
-                pass
+        # Fall back to random name generator if Anthropic fails
+        if not agent_name:
+            agent_name = generate_random_agent_name()
+
+        session_data["agent_name"] = agent_name
 
     # Save the updated session data
     try:

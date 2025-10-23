@@ -25,14 +25,35 @@ except ImportError:
 
 
 def get_completion_messages():
-    """Return list of friendly completion messages."""
-    return [
-        "Work complete!",
-        "All done!",
-        "Task finished!",
-        "Job complete!",
-        "Ready for next task!",
-    ]
+    """Return list of creative and fun completion messages."""
+    engineer_name = os.getenv("ENGINEER_NAME", "").strip()
+
+    if engineer_name:
+        return [
+            f"Mission accomplished, {engineer_name}!",
+            f"Crushed it, {engineer_name}!",
+            f"Done and dusted, {engineer_name}!",
+            f"Nailed it, {engineer_name}!",
+            f"Boom! All yours, {engineer_name}!",
+            f"{engineer_name}, we're cooking now!",
+            f"Easy peasy, {engineer_name}!",
+            f"{engineer_name}, another win in the books!",
+            f"Code complete, {engineer_name}!",
+            f"{engineer_name}, the stage is yours!",
+        ]
+    else:
+        return [
+            "Mission accomplished!",
+            "Crushed it!",
+            "Done and dusted!",
+            "Nailed it!",
+            "Boom! All set!",
+            "We're cooking now!",
+            "Easy peasy!",
+            "Another win!",
+            "Code complete!",
+            "Victory!",
+        ]
 
 
 def get_tts_script_path():

@@ -56,28 +56,30 @@ def generate_completion_message():
     engineer_name = os.getenv("ENGINEER_NAME", "").strip()
 
     if engineer_name:
-        name_instruction = f"Sometimes (about 30% of the time) include the engineer's name '{engineer_name}' in a natural way."
-        examples = f"""Examples of the style:
-- Standard: "Work complete!", "All done!", "Task finished!", "Ready for your next move!"
-- Personalized: "{engineer_name}, all set!", "Ready for you, {engineer_name}!", "Complete, {engineer_name}!", "{engineer_name}, we're done!" """
+        name_instruction = f"ALWAYS include the engineer's name '{engineer_name}' in a natural way."
+        examples = f"""Examples of the style (mix professional, playful, and occasionally humorous):
+- "{engineer_name}, mission accomplished!", "Crushed it, {engineer_name}!", "{engineer_name}, we're cooking now!"
+- "Done and dusted, {engineer_name}!", "{engineer_name}, another one bites the dust!", "Nailed it, {engineer_name}!"
+- "{engineer_name}, your code is poetry!", "Boom! Done, {engineer_name}!", "{engineer_name}, that was easy!"
+- "All yours, {engineer_name}!", "{engineer_name}, the stage is yours!", "Ready when you are, {engineer_name}!" """
     else:
         name_instruction = ""
-        examples = """Examples of the style: "Work complete!", "All done!", "Task finished!", "Ready for your next move!" """
+        examples = """Examples of the style: "Mission accomplished!", "Crushed it!", "Done and dusted!", "Boom! All set!", "Another win!" """
 
-    prompt = f"""Generate a short, concise, friendly completion message for when an AI coding assistant finishes a task.
+    prompt = f"""Generate a short, creative, and engaging completion message for when an AI coding assistant finishes a task.
 
 Requirements:
 - Keep it under 10 words
-- Make it positive and future focused
+- Make it positive, energetic, and occasionally humorous
+- Vary the tone: professional, playful, confident, or witty
 - Use natural, conversational language
-- Focus on completion/readiness
 - Do NOT include quotes, formatting, or explanations
 - Return ONLY the completion message text
 {name_instruction}
 
 {examples}
 
-Generate ONE completion message:"""
+Generate ONE creative completion message:"""
 
     response = prompt_llm(prompt)
 
